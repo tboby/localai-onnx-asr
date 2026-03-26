@@ -9,11 +9,13 @@ import sys
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import grpc
+import numpy as np
 
 import backend
 import backend_pb2
@@ -34,6 +36,7 @@ class FakeAdapter:
         self.vad_calls: list[tuple[object, dict[str, object]]] = []
         self.with_timestamps_calls = 0
         self.recognize_result = None
+        self.recognize_side_effects: list[object] = []
 
     def with_vad(self, vad: object, **kwargs: object) -> "FakeAdapter":
         self.vad_calls.append((vad, kwargs))
@@ -45,6 +48,11 @@ class FakeAdapter:
 
     def recognize(self, audio_path: str, **kwargs: object):
         self.last_recognize_call = (audio_path, kwargs)
+        if self.recognize_side_effects:
+            effect = self.recognize_side_effects.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            return effect
         return self.recognize_result
 
 
@@ -206,6 +214,41 @@ class BackendServicerTests(unittest.TestCase):
         self.assertEqual(response.segments[0].end, 400)
         self.assertEqual(fake_model.last_recognize_call[1]["target_language"], "en")
         self.assertFalse(fake_model.last_recognize_call[1]["pnc"])
+
+    def test_audio_transcription_falls_back_for_float_wav(self) -> None:
+        servicer = backend.BackendServicer()
+        fake_model = FakeAdapter()
+        fake_model.recognize_side_effects = [
+            ValueError("unknown format: 3"),
+            SimpleNamespace(text="hello float", timestamps=[0.0, 0.5]),
+        ]
+        servicer.model = fake_model
+        servicer.runtime = backend.RuntimeConfig(model_name="test", use_vad=False)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            audio_path = Path(handle.name)
+
+        try:
+            samples = np.linspace(-0.5, 0.5, 160, dtype=np.float32)
+            with wave.open(str(audio_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(4)
+                wav_file.setframerate(16000)
+                wav_file.setcomptype("NONE", "not compressed")
+                wav_file.writeframes(samples.tobytes())
+
+            with audio_path.open("r+b") as wav_handle:
+                wav_handle.seek(20)
+                wav_handle.write((3).to_bytes(2, byteorder="little", signed=False))
+
+            response = servicer.AudioTranscription(backend_pb2.TranscriptRequest(dst=str(audio_path)), None)
+        finally:
+            audio_path.unlink()
+
+        self.assertEqual(response.text, "hello float")
+        self.assertIsInstance(fake_model.last_recognize_call[0], np.ndarray)
+        self.assertEqual(fake_model.last_recognize_call[0].dtype, np.float32)
+        self.assertEqual(fake_model.last_recognize_call[1]["sample_rate"], 16000)
 
 
 class GrpcSmokeTests(unittest.TestCase):

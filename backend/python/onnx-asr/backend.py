@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import signal
+import struct
 import sys
 import time
 from concurrent import futures
@@ -154,6 +155,89 @@ def _clean_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _read_wav_with_fallback(audio_path: Path) -> tuple[Any, int]:
+    np = importlib.import_module("numpy")
+
+    with audio_path.open("rb") as handle:
+        if handle.read(4) != b"RIFF":
+            raise ValueError(f"Unsupported WAV container: {audio_path}")
+        handle.read(4)
+        if handle.read(4) != b"WAVE":
+            raise ValueError(f"Unsupported WAV header: {audio_path}")
+
+        audio_format = None
+        channels = None
+        sample_rate = None
+        bits_per_sample = None
+        data = None
+
+        while True:
+            chunk_header = handle.read(8)
+            if len(chunk_header) < 8:
+                break
+            chunk_id, chunk_size = struct.unpack("<4sI", chunk_header)
+            chunk_data = handle.read(chunk_size)
+            if chunk_size % 2:
+                handle.read(1)
+
+            if chunk_id == b"fmt ":
+                if len(chunk_data) < 16:
+                    raise ValueError("Invalid WAV fmt chunk")
+                audio_format, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
+                    "<HHIIHH", chunk_data[:16]
+                )
+            elif chunk_id == b"data":
+                data = chunk_data
+
+        if audio_format is None or channels is None or sample_rate is None or bits_per_sample is None or data is None:
+            raise ValueError("Incomplete WAV file")
+
+        if audio_format == 3:
+            if bits_per_sample == 32:
+                waveform = np.frombuffer(data, dtype="<f4")
+            elif bits_per_sample == 64:
+                waveform = np.frombuffer(data, dtype="<f8").astype(np.float32)
+            else:
+                raise ValueError(f"Unsupported IEEE float WAV bit depth: {bits_per_sample}")
+        elif audio_format == 1:
+            if bits_per_sample == 8:
+                waveform = (np.frombuffer(data, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+            elif bits_per_sample == 16:
+                waveform = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+            elif bits_per_sample == 24:
+                raw = np.frombuffer(data, dtype=np.uint8).reshape(-1, 3)
+                ints = (
+                    raw[:, 0].astype(np.int32)
+                    | (raw[:, 1].astype(np.int32) << 8)
+                    | (raw[:, 2].astype(np.int32) << 16)
+                )
+                ints = np.where(ints & 0x800000, ints - 0x1000000, ints)
+                waveform = ints.astype(np.float32) / 8388608.0
+            elif bits_per_sample == 32:
+                waveform = np.frombuffer(data, dtype="<i4").astype(np.float32) / 2147483648.0
+            else:
+                raise ValueError(f"Unsupported PCM WAV bit depth: {bits_per_sample}")
+        else:
+            raise ValueError(f"Unsupported WAV format: {audio_format}")
+
+        if channels > 1:
+            waveform = waveform.reshape(-1, channels).mean(axis=1)
+
+        return waveform.astype(np.float32, copy=False), int(sample_rate)
+
+
+def _recognize_audio(model: Any, audio_path: Path, recognize_kwargs: dict[str, Any]) -> Any:
+    try:
+        return model.recognize(str(audio_path), **recognize_kwargs)
+    except Exception as err:
+        if "unknown format: 3" not in str(err):
+            raise
+
+        waveform, sample_rate = _read_wav_with_fallback(audio_path)
+        _log(f"Falling back to manual WAV loader for IEEE float input: {audio_path}")
+        return model.recognize(waveform, sample_rate=sample_rate, **recognize_kwargs)
 
 
 def _resolve_model_name(model_name: str | None) -> str | None:
@@ -491,7 +575,7 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
             if request.prompt:
                 _log("Prompt provided but onnx-asr does not expose prompt injection; ignoring prompt")
 
-            raw_result = self.model.recognize(str(audio_path), **recognize_kwargs)
+            raw_result = _recognize_audio(self.model, audio_path, recognize_kwargs)
             segments, text = _normalize_results(raw_result, self.runtime.use_vad)
             return backend_pb2.TranscriptResult(segments=segments, text=text)
         except Exception as err:
