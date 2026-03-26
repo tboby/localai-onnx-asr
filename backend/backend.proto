@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package backend;
+
+service Backend {
+  rpc Health(HealthMessage) returns (Reply) {}
+  rpc Free(HealthMessage) returns (Result) {}
+  rpc LoadModel(ModelOptions) returns (Result) {}
+  rpc AudioTranscription(TranscriptRequest) returns (TranscriptResult) {}
+  rpc Status(HealthMessage) returns (StatusResponse) {}
+}
+
+message HealthMessage {}
+
+message Reply {
+  bytes message = 1;
+}
+
+message Result {
+  string message = 1;
+  bool success = 2;
+}
+
+message ModelOptions {
+  string Model = 1;
+  int32 Threads = 15;
+  bool CUDA = 28;
+  string Tokenizer = 34;
+  string AudioPath = 38;
+  string Type = 49;
+  string ModelPath = 59;
+  repeated string Options = 62;
+}
+
+message TranscriptRequest {
+  string dst = 2;
+  string language = 3;
+  uint32 threads = 4;
+  bool translate = 5;
+  bool diarize = 6;
+  string prompt = 7;
+}
+
+message TranscriptResult {
+  repeated TranscriptSegment segments = 1;
+  string text = 2;
+}
+
+message TranscriptSegment {
+  int32 id = 1;
+  int64 start = 2;
+  int64 end = 3;
+  string text = 4;
+  repeated int32 tokens = 5;
+  string speaker = 6;
+}
+
+message MemoryUsageData {
+  uint64 total = 1;
+  map<string, uint64> breakdown = 2;
+}
+
+message StatusResponse {
+  enum State {
+    UNINITIALIZED = 0;
+    BUSY = 1;
+    READY = 2;
+    ERROR = -1;
+  }
+
+  State state = 1;
+  MemoryUsageData memory = 2;
+}
