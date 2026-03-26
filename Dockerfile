@@ -1,32 +1,38 @@
-ARG PYTHON_IMAGE=python:3.12-slim
+ARG BASE_IMAGE=ubuntu:24.04
 
-FROM ${PYTHON_IMAGE}
+FROM ${BASE_IMAGE} AS builder
 
+ARG BACKEND=onnx-asr
 ARG BUILD_PROFILE=cpu
-ARG BACKEND_PORT=50051
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV PIP_NO_CACHE_DIR=1
 ENV BUILD_PROFILE=${BUILD_PROFILE}
-ENV LOCALAI_BACKEND_DIR=/opt/localai/backend/python/onnx-asr
+ENV PORTABLE_PYTHON=true
+ENV USE_PIP=true
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends bash ca-certificates && \
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        make \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python-is-python3 && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/localai
+COPY backend/python/${BACKEND} /${BACKEND}
+COPY backend/backend.proto /${BACKEND}/backend.proto
+COPY backend/python/common /${BACKEND}/common
 
-COPY backend/backend.proto /opt/localai/backend/backend.proto
-COPY backend/python/common/libbackend.sh /opt/localai/backend/python/common/libbackend.sh
-COPY backend/python/onnx-asr /opt/localai/backend/python/onnx-asr
-COPY container/run.sh /run.sh
+RUN cd /${BACKEND} && make && bash test.sh
 
-RUN bash /opt/localai/backend/python/onnx-asr/install.sh && \
-    bash /opt/localai/backend/python/onnx-asr/test.sh && \
-    chmod +x /run.sh
+FROM scratch
 
-EXPOSE ${BACKEND_PORT}
+ARG BACKEND=onnx-asr
+COPY --from=builder /${BACKEND}/ /
 
 ENTRYPOINT ["/run.sh"]
 CMD []

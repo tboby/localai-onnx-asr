@@ -60,7 +60,7 @@ Build a CPU image from the repo root:
 docker build -t localai-onnx-asr:latest-cpu --build-arg BUILD_PROFILE=cpu .
 ```
 
-The Docker build runs `install.sh` and `test.sh`, so a successful image build also validates the backend inside the container.
+The Docker build follows the same pattern as LocalAI's official Python backends: it builds a self-contained backend bundle with portable Python, then copies only that bundle into a `scratch` image. A successful image build also runs `test.sh` inside the builder stage.
 
 If you want to experiment with other dependency profiles, you can override `BUILD_PROFILE`, for example:
 
@@ -76,7 +76,7 @@ Run the backend container directly:
 docker run --rm -p 50051:50051 localai-onnx-asr:latest-cpu
 ```
 
-The image exposes a top-level `/run.sh` entrypoint so it matches LocalAI backend container expectations.
+The final image exposes a top-level `/run.sh` entrypoint from the backend bundle itself, which matches how LocalAI extracts and launches backend images.
 
 ## LocalAI gallery setup
 
