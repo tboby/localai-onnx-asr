@@ -48,6 +48,14 @@ PROVIDER_ALIASES = {
     "openvino": "OpenVINOExecutionProvider",
 }
 
+MODEL_ALIASES = {
+    "parakeet-v3": "nemo-parakeet-tdt-0.6b-v3",
+    "parakeet-v2": "nemo-parakeet-tdt-0.6b-v2",
+    "parakeet-ctc": "nemo-parakeet-ctc-0.6b",
+    "parakeet-rnnt": "nemo-parakeet-rnnt-0.6b",
+    "canary-1b-v2": "nemo-canary-1b-v2",
+}
+
 
 @dataclass
 class RuntimeConfig:
@@ -146,6 +154,51 @@ def _clean_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _resolve_model_name(model_name: str | None) -> str | None:
+    if not model_name:
+        return None
+    return MODEL_ALIASES.get(model_name.strip().lower(), model_name)
+
+
+def _looks_like_model_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return any((path / filename).exists() for filename in ("config.json", "preprocessor_config.json", "model.onnx"))
+
+
+def _resolve_model_path(model_name: str | None, model_path: str | None) -> str | None:
+    if not model_path:
+        return None
+
+    root = Path(model_path)
+    if _looks_like_model_dir(root):
+        return str(root)
+
+    candidates: list[Path] = []
+    if model_name:
+        raw_names = {
+            model_name,
+            model_name.replace("/", "--"),
+            model_name.replace("/", "___"),
+            model_name.replace("/", os.sep),
+        }
+        for raw_name in raw_names:
+            candidate = root / raw_name
+            if _looks_like_model_dir(candidate):
+                return str(candidate)
+            candidates.extend(path for path in root.glob(f"**/{raw_name}") if _looks_like_model_dir(path))
+
+    config_matches = [path.parent for path in root.glob("**/config.json") if path.is_file()]
+    if len(config_matches) == 1 and _looks_like_model_dir(config_matches[0]):
+        return str(config_matches[0])
+
+    for candidate in candidates:
+        if _looks_like_model_dir(candidate):
+            return str(candidate)
+
+    return None
 
 
 def _normalize_provider_name(name: str) -> str:
@@ -331,9 +384,11 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         try:
             options = _parse_options(request.Options)
-            model_name = _as_string(request.Model)
-            model_path = _as_string(request.ModelPath)
-            load_target = model_name or model_path
+            requested_model_name = _as_string(request.Model)
+            model_name = _resolve_model_name(requested_model_name)
+            model_path = _as_string(options.get("model_path")) or _as_string(options.get("path")) or _as_string(request.ModelPath)
+            resolved_model_path = _resolve_model_path(model_name, model_path)
+            load_target = model_name or resolved_model_path or model_path
             if not load_target:
                 raise ValueError("Model or ModelPath is required")
 
@@ -350,8 +405,16 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
                 "sess_options": session_options,
                 "providers": provider_payload,
             }
-            if model_name and model_path:
-                load_kwargs["path"] = model_path
+            if resolved_model_path:
+                load_kwargs["path"] = resolved_model_path
+
+            if requested_model_name and model_name != requested_model_name:
+                _log(f"Resolved model alias {requested_model_name} -> {model_name}")
+            if model_path and not resolved_model_path and model_name:
+                _log(
+                    "Ignoring ModelPath because it does not look like a concrete model directory: "
+                    f"{model_path}"
+                )
 
             _log(f"Loading onnx-asr model: {load_target}")
             model = onnx_asr.load_model(load_target, **load_kwargs)
@@ -380,7 +443,7 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
             self.model = model
             self.runtime = RuntimeConfig(
                 model_name=load_target,
-                model_path=model_path,
+                model_path=resolved_model_path or model_path,
                 language=_as_string(options.get("language")),
                 target_language=_as_string(options.get("target_language")),
                 pnc=_as_bool(options.get("pnc"), True),

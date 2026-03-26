@@ -122,6 +122,41 @@ class BackendServicerTests(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertIn("CUDA requested", response.message)
 
+    def test_load_model_ignores_non_model_cache_root(self) -> None:
+        servicer = backend.BackendServicer()
+        fake_asr = FakeOnnxAsr()
+
+        with tempfile.TemporaryDirectory() as model_cache:
+            with mock.patch.object(backend, "_load_onnx_asr_module", return_value=fake_asr), mock.patch.object(
+                backend, "_load_onnxruntime_module", return_value=FakeOnnxRuntime
+            ):
+                response = servicer.LoadModel(
+                    backend_pb2.ModelOptions(
+                        Model="nemo-parakeet-tdt-0.6b-v3",
+                        ModelPath=model_cache,
+                    ),
+                    None,
+                )
+
+        self.assertTrue(response.success)
+        self.assertEqual(fake_asr.load_model_calls[0][0][0], "nemo-parakeet-tdt-0.6b-v3")
+        self.assertNotIn("path", fake_asr.load_model_calls[0][1])
+
+    def test_load_model_resolves_common_aliases(self) -> None:
+        servicer = backend.BackendServicer()
+        fake_asr = FakeOnnxAsr()
+
+        with mock.patch.object(backend, "_load_onnx_asr_module", return_value=fake_asr), mock.patch.object(
+            backend, "_load_onnxruntime_module", return_value=FakeOnnxRuntime
+        ):
+            response = servicer.LoadModel(
+                backend_pb2.ModelOptions(Model="parakeet-v3"),
+                None,
+            )
+
+        self.assertTrue(response.success)
+        self.assertEqual(fake_asr.load_model_calls[0][0][0], "nemo-parakeet-tdt-0.6b-v3")
+
     def test_audio_transcription_normalizes_vad_segments(self) -> None:
         servicer = backend.BackendServicer()
         fake_model = FakeAdapter()
