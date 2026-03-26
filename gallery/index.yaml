@@ -1,6 +1,5 @@
 ---
-- &onnx_asr
-  name: "onnx-asr"
+- name: "onnx-asr"
   alias: "onnx-asr"
   description: |
     Speech-to-text backend powered by istupakov/onnx-asr. Supports ONNX ASR
@@ -15,9 +14,4 @@
     - transcription
     - ONNX
     - ASR
-  capabilities:
-    default: "cpu-onnx-asr"
-
-- !!merge <<: *onnx_asr
-  name: "cpu-onnx-asr"
   uri: "localai-onnx-asr:latest-cpu"

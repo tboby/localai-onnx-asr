@@ -82,6 +82,8 @@ The image exposes a top-level `/run.sh` entrypoint so it matches LocalAI backend
 
 This repo includes `gallery/index.yaml`, a minimal backend gallery that references `localai-onnx-asr:latest-cpu`.
 
+Important: external backend galleries should expose a concrete installable backend entry with the exact name `onnx-asr` and a direct `uri`. LocalAI installs by backend name, so using a meta entry plus a separate capability target can make `onnx-asr` appear present in the gallery but not installable.
+
 Register it in LocalAI with an absolute path or URL. For a local file path:
 
 ```bash
