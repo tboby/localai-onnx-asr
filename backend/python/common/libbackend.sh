@@ -6,12 +6,28 @@ if [ -z "$backend_dir" ]; then
     backend_dir="$(cd -- "$(dirname "${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}")" && pwd)"
 fi
 backend_root="$(cd -- "$backend_dir/../.." && pwd)"
+bundle_root="$(cd -- "$backend_root/../../.." && pwd)"
 venv_dir="${VENV_DIR:-$backend_dir/venv}"
 
 venv_python=""
 venv_pip=""
 
 detect_python() {
+    if [ -x "$bundle_root/usr/local/bin/python3" ]; then
+        printf '%s\n' "$bundle_root/usr/local/bin/python3"
+        return 0
+    fi
+
+    if [ -x "$bundle_root/usr/local/bin/python" ]; then
+        printf '%s\n' "$bundle_root/usr/local/bin/python"
+        return 0
+    fi
+
+    if [ -x "$bundle_root/usr/bin/python3" ]; then
+        printf '%s\n' "$bundle_root/usr/bin/python3"
+        return 0
+    fi
+
     if [ -n "${PYTHON_BIN:-}" ] && command -v "$PYTHON_BIN" >/dev/null 2>&1; then
         printf '%s\n' "$PYTHON_BIN"
         return 0
@@ -34,10 +50,20 @@ detect_python() {
 ensureVenv() {
     local host_python
 
-    host_python="$(detect_python)"
-    if [ ! -d "$venv_dir" ]; then
-        "$host_python" -m venv "$venv_dir"
+    if [ -x "$venv_dir/Scripts/python.exe" ]; then
+        venv_python="$venv_dir/Scripts/python.exe"
+        venv_pip="$venv_dir/Scripts/pip.exe"
+        return 0
     fi
+
+    if [ -x "$venv_dir/bin/python" ]; then
+        venv_python="$venv_dir/bin/python"
+        venv_pip="$venv_dir/bin/pip"
+        return 0
+    fi
+
+    host_python="$(detect_python)"
+    "$host_python" -m venv "$venv_dir"
 
     if [ -x "$venv_dir/Scripts/python.exe" ]; then
         venv_python="$venv_dir/Scripts/python.exe"
