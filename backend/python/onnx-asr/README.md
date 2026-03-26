@@ -51,3 +51,93 @@ If `TranscriptRequest.translate` is enabled and `target_language` is not set, th
 - The backend converts `onnx-asr` timestamps from seconds to milliseconds before filling `TranscriptSegment.start` and `TranscriptSegment.end`.
 - Token strings from `onnx-asr` are not copied into `TranscriptSegment.tokens` because LocalAI expects integer token ids there.
 - Diarization and prompt injection are not implemented by `onnx-asr`; requests using those fields are accepted but those fields are ignored.
+
+## Container build
+
+Build a CPU image from the repo root:
+
+```bash
+docker build -t localai-onnx-asr:latest-cpu --build-arg BUILD_PROFILE=cpu .
+```
+
+The Docker build runs `install.sh` and `test.sh`, so a successful image build also validates the backend inside the container.
+
+If you want to experiment with other dependency profiles, you can override `BUILD_PROFILE`, for example:
+
+```bash
+docker build -t localai-onnx-asr:latest-gpu --build-arg BUILD_PROFILE=gpu .
+```
+
+Only the CPU image is wired into the bundled gallery file, because that path was validated end-to-end here.
+
+Run the backend container directly:
+
+```bash
+docker run --rm -p 50051:50051 localai-onnx-asr:latest-cpu
+```
+
+The image exposes a top-level `/run.sh` entrypoint so it matches LocalAI backend container expectations.
+
+## LocalAI gallery setup
+
+This repo includes `gallery/index.yaml`, a minimal backend gallery that references `localai-onnx-asr:latest-cpu`.
+
+Register it in LocalAI with an absolute path or URL. For a local file path:
+
+```bash
+local-ai run --backend-galleries '[{"name":"localai-onnx","url":"file:///ABSOLUTE/PATH/TO/gallery/index.yaml"}]'
+```
+
+Or persist it with the environment variable:
+
+```bash
+export LOCALAI_BACKEND_GALLERIES='[{"name":"localai-onnx","url":"file:///ABSOLUTE/PATH/TO/gallery/index.yaml"}]'
+local-ai run
+```
+
+If you publish the image to a registry, update `gallery/index.yaml` so `uri` points at the pushed image names.
+
+## GHCR publishing
+
+This repo now includes `.github/workflows/publish-ghcr.yml`, which builds and pushes the CPU backend image to GitHub Container Registry whenever you push a tag that starts with `v`.
+
+Published image name:
+
+```text
+ghcr.io/<your-github-owner>/localai-onnx-asr
+```
+
+Published tags include:
+
+- the git tag itself, for example `v0.1.0`
+- the plain semver version, for example `0.1.0`
+- the major/minor tag, for example `0.1`
+- `latest-cpu`
+
+Example release flow:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+For a GHCR-backed LocalAI gallery, start from `gallery/index.ghcr.example.yaml` and replace `YOUR_GITHUB_OWNER` with your GitHub owner or org.
+
+## Example LocalAI model config
+
+```yaml
+name: onnx-parakeet
+backend: onnx-asr
+
+parameters:
+  model: nemo-parakeet-tdt-0.6b-v3
+
+known_usecases:
+  - transcript
+
+options:
+  - timestamps:true
+  - vad:true
+  - vad_model:silero
+  - language:en
+```

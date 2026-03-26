@@ -1,0 +1,23 @@
+---
+- &onnx_asr
+  name: "onnx-asr"
+  alias: "onnx-asr"
+  description: |
+    Speech-to-text backend powered by istupakov/onnx-asr. Supports ONNX ASR
+    model families such as Whisper, Parakeet, Canary, Vosk, and other models
+    exposed by the onnx-asr loader.
+  license: MIT
+  urls:
+    - https://github.com/istupakov/onnx-asr
+    - https://github.com/mudler/LocalAI
+  tags:
+    - speech-to-text
+    - transcription
+    - ONNX
+    - ASR
+  capabilities:
+    default: "cpu-onnx-asr"
+
+- !!merge <<: *onnx_asr
+  name: "cpu-onnx-asr"
+  uri: "localai-onnx-asr:latest-cpu"
