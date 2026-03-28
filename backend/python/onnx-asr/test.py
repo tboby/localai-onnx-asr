@@ -250,6 +250,34 @@ class BackendServicerTests(unittest.TestCase):
         self.assertEqual(fake_model.last_recognize_call[0].dtype, np.float32)
         self.assertEqual(fake_model.last_recognize_call[1]["sample_rate"], 16000)
 
+    def test_audio_transcription_falls_back_for_openai_audio_types(self) -> None:
+        servicer = backend.BackendServicer()
+        fake_model = FakeAdapter()
+        fake_model.recognize_side_effects = [
+            ValueError("file does not start with RIFF id"),
+            SimpleNamespace(text="hello mp3", timestamps=[0.0, 0.25]),
+        ]
+        servicer.model = fake_model
+        servicer.runtime = backend.RuntimeConfig(model_name="test", use_vad=False)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
+            audio_path = Path(handle.name)
+
+        try:
+            with mock.patch.object(
+                backend,
+                "_decode_audio_fallback",
+                return_value=(np.array([0.1, -0.1], dtype=np.float32), 22050),
+            ) as decode_fallback:
+                response = servicer.AudioTranscription(backend_pb2.TranscriptRequest(dst=str(audio_path)), None)
+        finally:
+            audio_path.unlink()
+
+        self.assertEqual(response.text, "hello mp3")
+        decode_fallback.assert_called_once_with(audio_path)
+        self.assertIsInstance(fake_model.last_recognize_call[0], np.ndarray)
+        self.assertEqual(fake_model.last_recognize_call[1]["sample_rate"], 22050)
+
 
 class GrpcSmokeTests(unittest.TestCase):
     def setUp(self) -> None:

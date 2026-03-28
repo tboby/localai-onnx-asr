@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import signal
+import subprocess
 import struct
 import sys
 import time
@@ -25,6 +26,17 @@ import backend_pb2_grpc
 _ONE_DAY_IN_SECONDS = 60 * 60 * 24
 _MESSAGE_LIMIT_BYTES = 50 * 1024 * 1024
 MAX_WORKERS = int(os.environ.get("PYTHON_GRPC_MAX_WORKERS", "1"))
+OPENAI_AUDIO_EXTENSIONS = {
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+    ".ogg",
+    ".wav",
+    ".webm",
+}
 AZURE_PROVIDER = "AzureExecutionProvider"
 GPU_PROVIDERS = [
     "TensorrtExecutionProvider",
@@ -157,6 +169,34 @@ def _clean_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _to_mono_float32(waveform: Any) -> Any:
+    np = importlib.import_module("numpy")
+
+    array = np.asarray(waveform)
+    if array.ndim == 0:
+        return array.astype(np.float32).reshape(1)
+    if array.ndim > 1:
+        if array.ndim == 2 and array.shape[0] <= 8 and array.shape[1] > array.shape[0]:
+            array = array.mean(axis=0)
+        else:
+            array = array.mean(axis=-1)
+
+    if array.dtype.kind == "f":
+        return array.astype(np.float32, copy=False)
+
+    if array.dtype.kind == "u":
+        info = np.iinfo(array.dtype)
+        midpoint = (info.max + 1) / 2.0
+        return ((array.astype(np.float32) - midpoint) / midpoint).astype(np.float32, copy=False)
+
+    if array.dtype.kind == "i":
+        info = np.iinfo(array.dtype)
+        scale = float(max(abs(info.min), info.max))
+        return (array.astype(np.float32) / scale).astype(np.float32, copy=False)
+
+    return array.astype(np.float32)
+
+
 def _read_wav_with_fallback(audio_path: Path) -> tuple[Any, int]:
     np = importlib.import_module("numpy")
 
@@ -228,15 +268,97 @@ def _read_wav_with_fallback(audio_path: Path) -> tuple[Any, int]:
         return waveform.astype(np.float32, copy=False), int(sample_rate)
 
 
+def _decode_audio_with_soundfile(audio_path: Path) -> tuple[Any, int]:
+    sf = importlib.import_module("soundfile")
+
+    waveform, sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=False)
+    return _to_mono_float32(waveform), int(sample_rate)
+
+
+def _decode_audio_with_ffmpeg(audio_path: Path) -> tuple[Any, int]:
+    imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+    np = importlib.import_module("numpy")
+
+    sample_rate = 16000
+    command = [
+        imageio_ffmpeg.get_ffmpeg_exe(),
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        str(audio_path),
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "pipe:1",
+    ]
+    result = subprocess.run(command, capture_output=True, check=False)
+    if result.returncode != 0:
+        error = result.stderr.decode("utf-8", errors="ignore").strip() or "ffmpeg decode failed"
+        raise ValueError(error)
+
+    waveform = np.frombuffer(result.stdout, dtype="<f4")
+    if waveform.size == 0:
+        raise ValueError(f"ffmpeg produced no audio samples for {audio_path}")
+
+    return waveform.astype(np.float32, copy=False), sample_rate
+
+
+def _should_try_generic_audio_decoders(audio_path: Path, error: Exception) -> bool:
+    suffix = audio_path.suffix.lower()
+    if suffix in OPENAI_AUDIO_EXTENSIONS:
+        return True
+
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "riff",
+            "wave",
+            "format",
+            "could not",
+            "failed to open",
+            "invalid data",
+            "unsupported",
+        )
+    )
+
+
+def _decode_audio_fallback(audio_path: Path) -> tuple[Any, int]:
+    errors: list[str] = []
+
+    for name, loader in (
+        ("soundfile", _decode_audio_with_soundfile),
+        ("ffmpeg", _decode_audio_with_ffmpeg),
+    ):
+        try:
+            waveform, sample_rate = loader(audio_path)
+            _log(f"Falling back to {name} decoder for input: {audio_path}")
+            return waveform, sample_rate
+        except Exception as err:
+            errors.append(f"{name}: {err}")
+
+    raise ValueError("; ".join(errors))
+
+
 def _recognize_audio(model: Any, audio_path: Path, recognize_kwargs: dict[str, Any]) -> Any:
     try:
         return model.recognize(str(audio_path), **recognize_kwargs)
     except Exception as err:
-        if "unknown format: 3" not in str(err):
+        if "unknown format: 3" in str(err):
+            waveform, sample_rate = _read_wav_with_fallback(audio_path)
+            _log(f"Falling back to manual WAV loader for IEEE float input: {audio_path}")
+            return model.recognize(waveform, sample_rate=sample_rate, **recognize_kwargs)
+
+        if not _should_try_generic_audio_decoders(audio_path, err):
             raise
 
-        waveform, sample_rate = _read_wav_with_fallback(audio_path)
-        _log(f"Falling back to manual WAV loader for IEEE float input: {audio_path}")
+        waveform, sample_rate = _decode_audio_fallback(audio_path)
         return model.recognize(waveform, sample_rate=sample_rate, **recognize_kwargs)
 
 

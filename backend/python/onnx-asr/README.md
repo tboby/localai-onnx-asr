@@ -48,6 +48,8 @@ If `TranscriptRequest.translate` is enabled and `target_language` is not set, th
 
 ## Notes
 
+- The backend now accepts the OpenAI transcription API file extensions `flac`, `m4a`, `mp3`, `mp4`, `mpeg`, `mpga`, `ogg`, `wav`, and `webm`.
+- It first tries native `onnx-asr` path loading, then falls back to Python decoders (`soundfile`, then bundled `ffmpeg` via `imageio-ffmpeg`) so mislabeled or non-WAV uploads can still be normalized into waveform input.
 - The backend converts `onnx-asr` timestamps from seconds to milliseconds before filling `TranscriptSegment.start` and `TranscriptSegment.end`.
 - Token strings from `onnx-asr` are not copied into `TranscriptSegment.tokens` because LocalAI expects integer token ids there.
 - Diarization and prompt injection are not implemented by `onnx-asr`; requests using those fields are accepted but those fields are ignored.
